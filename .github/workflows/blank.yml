@@ -1,0 +1,84 @@
+name: Package Commands Zips
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version_suffix:
+        description: 版本后缀（留空自动时间戳，填1.0.0生成v1.0.0）
+        required: false
+        default: ''
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate version tag
+        id: genver
+        run: |
+          if [ -n "${{ github.event.inputs.version_suffix }}" ]; then
+            TAG="v${{ github.event.inputs.version_suffix }}"
+          else
+            TAG="v$(date +%Y%m%d%H%M)"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Auto scan folders, build zip + sha256
+        run: |
+          > body.md
+          echo "### 校验信息" >> body.md
+          echo '```' >> body.md
+
+          for D in */; do
+            DIRNAME="${D%/}"
+            # 跳过隐藏目录
+            if [[ "$DIRNAME" == .* ]]; then
+              continue
+            fi
+            # 跳过空文件夹
+            if [ -z "$(ls -A "$DIRNAME")" ]; then
+              continue
+            fi
+            # 重点：进入目录打包，zip内不含外层DIRNAME文件夹
+            cd "$DIRNAME"
+            zip -9 -r ../"${DIRNAME}.zip" . \
+              -x "*.log" \
+              -x "*.tmp" \
+              -x "*.cache" \
+              -x ".DS_Store" \
+              -x "Thumbs.db"
+            cd ..
+            sha256sum "${DIRNAME}.zip" > "${DIRNAME}.zip.sha256"
+            cat "${DIRNAME}.zip.sha256" >> body.md
+          done
+          echo '```' >> body.md
+
+          echo "===== Generated files ====="
+          ls -la *.zip *.zip.sha256
+
+      - name: Create & push tag
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git tag ${{ steps.genver.outputs.tag }}
+          git push origin ${{ steps.genver.outputs.tag }}
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.genver.outputs.tag }}
+          name: pemu_commands ${{ steps.genver.outputs.tag }}
+          files: |
+            *.zip
+            *.zip.sha256
+          body_path: body.md
+          fail_on_unmatched_files: true
